@@ -1,0 +1,211 @@
+name: Mono-Zenith Code Quality
+
+on:
+  pull_request:
+    branches:
+      - mono-zenith-1.0
+
+jobs:
+  checkpatch:
+    name: checkpatch.pl (PR diff)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 0
+
+      - name: Run checkpatch on PR diff
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          git diff "$BASE".."$HEAD" -- '*.c' '*.h' > pr.diff
+
+          if [ ! -s pr.diff ]; then
+            echo "ℹ️  No C/header file changes in this PR."
+            exit 0
+          fi
+
+          echo "Running checkpatch on $(wc -l < pr.diff) lines of diff..."
+          perl scripts/checkpatch.pl \
+            --no-tree \
+            --strict \
+            --show-types \
+            --ignore=LONG_LINE \
+            pr.diff 2>&1 | tee checkpatch-results.txt || true
+
+          # Fail on errors, warn on warnings
+          if grep -q "^ERROR:" checkpatch-results.txt; then
+            echo "❌ checkpatch found errors:"
+            grep "^ERROR:" checkpatch-results.txt
+            exit 1
+          fi
+
+          WARNING_COUNT=$(grep -c "^WARNING:" checkpatch-results.txt || true)
+          if [ "$WARNING_COUNT" -gt 0 ]; then
+            echo "⚠️  checkpatch found $WARNING_COUNT warning(s) — review recommended"
+          else
+            echo "✅ checkpatch passed"
+          fi
+
+      - name: Upload checkpatch results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkpatch-results
+          path: checkpatch-results.txt
+
+  sparse:
+    name: Sparse Static Analysis [x86_64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install sparse
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            sparse build-essential flex bison \
+            libssl-dev libelf-dev
+
+      - name: Configure kernel
+        run: make ARCH=x86_64 x86_64_defconfig
+
+      - name: Run sparse analysis
+        run: |
+          make ARCH=x86_64 \
+               C=2 \
+               CF="-D__CHECK_ENDIAN__ -Wsparse-all" \
+               -j$(nproc) \
+               2>&1 | grep -E "warning:|error:|sparse:" | tee sparse-report.txt || true
+
+          ISSUE_COUNT=$(wc -l < sparse-report.txt)
+          echo "Sparse found $ISSUE_COUNT issue(s)"
+
+      - name: Upload sparse report
+        uses: actions/upload-artifact@v4
+        with:
+          name: sparse-report
+          path: sparse-report.txt
+
+  clang-tidy:
+    name: Clang-Tidy (changed files)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 0
+
+      - name: Install Clang tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            clang clang-tidy lld llvm \
+            libssl-dev libelf-dev
+
+      - name: Get changed C files
+        id: changed
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          CHANGED=$(git diff --name-only "$BASE".."$HEAD" -- '*.c' | head -20)
+          echo "files=$CHANGED" >> $GITHUB_OUTPUT
+          if [ -z "$CHANGED" ]; then
+            echo "ℹ️  No C files changed"
+          else
+            echo "Changed C files:"
+            echo "$CHANGED"
+          fi
+
+      - name: Generate compile_commands.json
+        if: steps.changed.outputs.files != ''
+        run: |
+          make ARCH=x86_64 LLVM=1 x86_64_defconfig
+          make ARCH=x86_64 LLVM=1 -j$(nproc) \
+               scripts/clang-tools/gen_compile_commands.py 2>/dev/null || true
+
+      - name: Run clang-tidy on changed files
+        if: steps.changed.outputs.files != ''
+        run: |
+          for f in ${{ steps.changed.outputs.files }}; do
+            if [ -f "$f" ]; then
+              echo "Checking: $f"
+              clang-tidy "$f" \
+                --checks="-*,clang-analyzer-*,bugprone-*" \
+                -- -DCONFIG_X86_64 -I include \
+                2>&1 | tee -a clang-tidy-report.txt || true
+            fi
+          done
+
+      - name: Upload clang-tidy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-report
+          path: clang-tidy-report.txt
+
+  commit-message:
+    name: Commit Message Format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check commit message format
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          FAILED=0
+
+          git log "$BASE".."$HEAD" --format="%H %s" | while read hash subject; do
+            # Check for <subsystem>: short description format
+            if echo "$subject" | grep -qE "^[a-zA-Z0-9/_-]+: .+"; then
+              echo "✅ $hash — $subject"
+            else
+              echo "❌ $hash — Bad format: '$subject'"
+              echo "   Expected: '<subsystem>: short description'"
+              FAILED=1
+            fi
+          done
+
+          # Re-check for any failures (subshell workaround)
+          FAIL_COUNT=$(git log "$BASE".."$HEAD" --format="%s" | \
+            grep -cvE "^[a-zA-Z0-9/_-]+: .+" || true)
+
+          if [ "$FAIL_COUNT" -gt 0 ]; then
+            echo "❌ $FAIL_COUNT commit(s) have incorrect message format"
+            echo "   Follow: '<subsystem>: short description'"
+            exit 1
+          fi
+          echo "✅ All commit messages follow the Mono-Zenith format"
+
+  docs-check:
+    name: Docs & RFC Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 0
+
+      - name: Check for docs/ updates on major changes
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          CHANGED=$(git diff --name-only "$BASE".."$HEAD")
+
+          # Warn if arch/ or kernel/ changed without docs/
+          ARCH_CHANGED=$(echo "$CHANGED" | grep -E "^(arch|kernel|drivers)/" || true)
+          DOCS_CHANGED=$(echo "$CHANGED" | grep -E "^docs/" || true)
+
+          if [ -n "$ARCH_CHANGED" ] && [ -z "$DOCS_CHANGED" ]; then
+            echo "⚠️  Core subsystem files changed but no docs/ updates found."
+            echo "   Consider updating docs/ or docs/rfcs/ for significant changes."
+          else
+            echo "✅ Docs check passed"
+          fi

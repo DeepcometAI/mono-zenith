@@ -1,0 +1,93 @@
+name: Mono-Zenith Nightly & Upstream Sync
+
+on:
+  schedule:
+    # Nightly build at 00:30 UTC
+    - cron: "30 0 * * *"
+  workflow_dispatch:
+    inputs:
+      run_sync_check:
+        description: "Check upstream divergence"
+        type: boolean
+        default: true
+
+jobs:
+  nightly-build:
+    name: Nightly Snapshot [arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential flex bison libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu dwarves pahole ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-nightly-arm64-${{ github.run_id }}
+          restore-keys: ccache-nightly-arm64-
+
+      - name: Build nightly ARM64 snapshot
+        run: |
+          DATE=$(date +%Y%m%d)
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               LOCALVERSION=-mono-zenith-nightly-${DATE} \
+               defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               CC="ccache aarch64-linux-gnu-gcc" \
+               -j$(nproc) 2>&1 | tee nightly-build.log
+
+      - name: Upload nightly artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-arm64-${{ github.run_number }}
+          path: arch/arm64/boot/Image
+          retention-days: 3
+
+      - name: Upload nightly build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-build-log-failed
+          path: nightly-build.log
+
+  upstream-divergence:
+    name: Upstream Divergence Report
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'schedule' || inputs.run_sync_check == true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 0
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git || true
+          git fetch upstream --tags --depth=100 2>&1 | tail -5
+
+      - name: Report divergence from upstream
+        run: |
+          # Find the most recent upstream tag we're based on
+          BASE_TAG=$(git describe --tags --match "v*" --abbrev=0 2>/dev/null || echo "unknown")
+          echo "📌 Mono-Zenith base: $BASE_TAG"
+
+          # Count commits ahead of that tag
+          AHEAD=$(git rev-list ${BASE_TAG}..HEAD --count 2>/dev/null || echo "unknown")
+          echo "📈 Commits ahead of $BASE_TAG: $AHEAD"
+
+          # List latest upstream tags for awareness
+          echo ""
+          echo "🔖 Latest upstream tags:"
+          git tag --sort=-version:refname | grep "^v[0-9]" | head -10
+
+          echo ""
+          echo "ℹ️  Review upstream tags to decide if mono-zenith-1.0 should rebase."

@@ -1,0 +1,157 @@
+name: Mono-Zenith Release
+
+on:
+  push:
+    tags:
+      - "mono-zenith-*"     # e.g. mono-zenith-1.0-rc1, mono-zenith-1.0.0
+
+jobs:
+  build-release:
+    name: Release Build [${{ matrix.arch }}]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            cross_compile: aarch64-linux-gnu-
+            pkg_arch: arm64
+          - arch: x86_64
+            cross_compile: ""
+            pkg_arch: amd64
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev dwarves pahole \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            dpkg-dev fakeroot rsync
+
+      - name: Set version from tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "localversion=-${TAG}-${{ matrix.arch }}" >> $GITHUB_OUTPUT
+
+      - name: Configure kernel
+        run: |
+          make ARCH=${{ matrix.arch }} \
+               CROSS_COMPILE=${{ matrix.cross_compile }} \
+               defconfig
+
+      - name: Build .deb package
+        run: |
+          make ARCH=${{ matrix.arch }} \
+               CROSS_COMPILE=${{ matrix.cross_compile }} \
+               LOCALVERSION=${{ steps.version.outputs.localversion }} \
+               -j$(nproc) \
+               bindeb-pkg
+
+      - name: Collect release artifacts
+        run: |
+          mkdir -p release-out
+          mv ../*.deb release-out/ 2>/dev/null || true
+          # Copy kernel image
+          cp arch/arm64/boot/Image release-out/Image-${{ matrix.arch }} 2>/dev/null || \
+          cp arch/x86/boot/bzImage release-out/bzImage-${{ matrix.arch }} 2>/dev/null || true
+          ls -lh release-out/
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.arch }}
+          path: release-out/
+
+  nightly:
+    name: Nightly Snapshot Build
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential flex bison libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu dwarves pahole
+
+      - name: Build ARM64 snapshot
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+               LOCALVERSION=-nightly-$(date +%Y%m%d) \
+               defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+
+      - name: Upload nightly image
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-arm64-${{ github.run_id }}
+          path: arch/arm64/boot/Image
+          retention-days: 3
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts/
+
+      - name: List artifacts
+        run: find all-artifacts/ -type f | sort
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          cat <<EOF > release-notes.md
+          ## Mono-Zenith Kernel — $TAG
+
+          **DeepcometAI / Mono-Zenith**
+          Research and engineering fork of the Linux kernel targeting AI-native workloads and heterogeneous compute (NPU/TPU) on ARM64-first platforms.
+
+          ### Architectures
+          - ✅ ARM64 (primary — Snapdragon X / Copilot+ targets)
+          - ✅ x86_64 (secondary)
+
+          ### Packages
+          - \`.deb\` packages for direct installation on ARM64 and amd64 systems.
+          - Raw kernel images included for embedded/VM use.
+
+          ### Notes
+          - Branch: \`mono-zenith-1.0\`
+          - Report security issues via the repository Security policy before public disclosure.
+          - See \`docs/security.md\` for backport and CVE documentation.
+          EOF
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Mono-Zenith ${{ github.ref_name }}"
+          body_path: release-notes.md
+          files: all-artifacts/**/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'rc') }}

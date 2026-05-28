@@ -1,0 +1,115 @@
+name: Mono-Zenith Build CI
+
+on:
+  push:
+    branches:
+      - mono-zenith-1.0
+      - "feat/**"
+      - "fix/**"
+  pull_request:
+    branches:
+      - mono-zenith-1.0
+
+jobs:
+  build:
+    name: Build [${{ matrix.arch }}]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            cross_compile: aarch64-linux-gnu-
+            defconfig: defconfig
+            image: arch/arm64/boot/Image
+          - arch: x86_64
+            cross_compile: ""
+            defconfig: x86_64_defconfig
+            image: arch/x86/boot/bzImage
+
+    steps:
+      - name: Checkout mono-zenith-1.0 (shallow)
+        uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            ccache dwarves pahole python3 \
+            clang lld llvm
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.arch }}-
+
+      - name: Configure kernel
+        run: |
+          make ARCH=${{ matrix.arch }} \
+               CROSS_COMPILE=${{ matrix.cross_compile }} \
+               ${{ matrix.defconfig }}
+
+      - name: Build kernel image
+        run: |
+          make ARCH=${{ matrix.arch }} \
+               CROSS_COMPILE=${{ matrix.cross_compile }} \
+               CC="ccache gcc" \
+               -j$(nproc) \
+               2>&1 | tee build-${{ matrix.arch }}.log
+
+      - name: Verify kernel image exists
+        run: |
+          test -f ${{ matrix.image }} && \
+          echo "✅ Kernel image built: ${{ matrix.image }}" || \
+          (echo "❌ Kernel image missing" && exit 1)
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.arch }}
+          path: build-${{ matrix.arch }}.log
+
+      - name: Upload kernel image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image-${{ matrix.arch }}
+          path: ${{ matrix.image }}
+          retention-days: 7
+
+  clang-build:
+    name: LLVM/Clang Build [arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install Clang toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld llvm \
+            libssl-dev libelf-dev dwarves pahole \
+            gcc-aarch64-linux-gnu
+
+      - name: Build with Clang (ARM64)
+        run: |
+          make ARCH=arm64 LLVM=1 defconfig
+          make ARCH=arm64 LLVM=1 -j$(nproc) 2>&1 | tee clang-build.log
+
+      - name: Upload Clang build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-build-log
+          path: clang-build.log

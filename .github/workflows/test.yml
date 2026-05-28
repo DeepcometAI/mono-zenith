@@ -1,0 +1,176 @@
+name: Mono-Zenith Tests
+
+on:
+  push:
+    branches:
+      - mono-zenith-1.0
+  pull_request:
+    branches:
+      - mono-zenith-1.0
+
+jobs:
+  kunit:
+    name: KUnit Tests (UML/x86_64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential flex bison \
+            libssl-dev libelf-dev python3 python3-pip
+
+      - name: Run KUnit via UML
+        run: |
+          ./tools/testing/kunit/kunit.py run \
+            --arch=x86_64 \
+            --jobs=$(nproc) \
+            2>&1 | tee kunit-results.log
+        continue-on-error: true
+
+      - name: Parse KUnit results
+        run: |
+          if grep -q "FAILED" kunit-results.log; then
+            echo "❌ KUnit tests failed"
+            grep "FAILED" kunit-results.log
+            exit 1
+          else
+            echo "✅ KUnit tests passed"
+          fi
+
+      - name: Upload KUnit results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kunit-results
+          path: kunit-results.log
+
+  qemu-boot-arm64:
+    name: QEMU Boot Smoke Test [arm64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential flex bison libssl-dev libelf-dev \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            qemu-system-arm dwarves pahole
+
+      - name: Build ARM64 kernel
+        run: |
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc)
+
+      - name: QEMU boot smoke test
+        run: |
+          timeout 90 qemu-system-aarch64 \
+            -M virt \
+            -cpu cortex-a57 \
+            -m 512M \
+            -nographic \
+            -kernel arch/arm64/boot/Image \
+            -append "console=ttyAMA0 panic=1 init=/bin/sh" \
+            2>&1 | tee qemu-boot.log || true
+
+          # Check for kernel panic
+          if grep -q "Kernel panic" qemu-boot.log; then
+            echo "❌ Kernel panic detected during boot"
+            cat qemu-boot.log
+            exit 1
+          fi
+
+          # Check that decompression / boot started
+          if grep -q "Booting Linux" qemu-boot.log || \
+             grep -q "Linux version" qemu-boot.log; then
+            echo "✅ Kernel booted successfully"
+          else
+            echo "⚠️  Boot output unclear — check log"
+          fi
+
+      - name: Upload boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-boot-log-arm64
+          path: qemu-boot.log
+
+  qemu-boot-x86:
+    name: QEMU Boot Smoke Test [x86_64]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            build-essential flex bison libssl-dev libelf-dev \
+            qemu-system-x86 dwarves pahole
+
+      - name: Build x86_64 kernel
+        run: |
+          make ARCH=x86_64 x86_64_defconfig
+          make ARCH=x86_64 -j$(nproc)
+
+      - name: QEMU boot smoke test
+        run: |
+          timeout 90 qemu-system-x86_64 \
+            -m 512M \
+            -nographic \
+            -kernel arch/x86/boot/bzImage \
+            -append "console=ttyS0 panic=1" \
+            2>&1 | tee qemu-boot-x86.log || true
+
+          if grep -q "Kernel panic" qemu-boot-x86.log; then
+            echo "❌ Kernel panic detected"
+            exit 1
+          fi
+          echo "✅ x86_64 boot smoke test passed"
+
+      - name: Upload boot log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-boot-log-x86_64
+          path: qemu-boot-x86.log
+
+  patches-apply:
+    name: Verify patches/ Apply Cleanly
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: mono-zenith-1.0
+          fetch-depth: 1
+
+      - name: Check patches directory
+        run: |
+          if [ ! -d patches/ ] || [ -z "$(ls patches/*.patch 2>/dev/null)" ]; then
+            echo "ℹ️  No patches found in patches/ — skipping"
+            exit 0
+          fi
+          echo "Found patches:"
+          ls patches/*.patch
+
+      - name: Dry-run apply all patches
+        run: |
+          for patch in patches/*.patch; do
+            echo "Checking: $patch"
+            git apply --check "$patch" || \
+              (echo "❌ Patch does not apply: $patch" && exit 1)
+          done
+          echo "✅ All patches apply cleanly"

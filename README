@@ -1,168 +1,178 @@
-Linux kernel
-============
+# Mono‑Zenith Kernel
 
-The Linux kernel is the core of any Linux operating system. It manages hardware,
-system resources, and provides the fundamental services for all other software.
+**Mono‑Zenith** is a research and engineering fork of the Linux kernel, preserving the full upstream history while pursuing experimental kernel features for AI‑native workloads, heterogeneous compute (NPU/TPU), and ARM64‑first platforms. This repository is a complete mirror of the official Linux history and is intended as a development baseline and research platform under the DeepcometAI organization.
 
-Quick Start
------------
+---
 
-* Report a bug: See Documentation/admin-guide/reporting-issues.rst
-* Get the latest kernel: https://kernel.org
-* Build the kernel: See Documentation/admin-guide/quickly-build-trimmed-linux.rst
-* Join the community: https://lore.kernel.org/
+## Overview
+**Purpose:** Provide a stable, auditable baseline that mirrors upstream Linux while enabling rapid experimentation with kernel primitives, scheduler extensions, and hardware acceleration for AI workloads.
 
-Essential Documentation
------------------------
+**Scope:**  
+- Preserve upstream commits, tags, and history for provenance.  
+- Maintain a lightweight working branch for active development (`mono-zenith-1.0`) pinned to a chosen kernel snapshot.  
+- Offer reproducible builds and CI for kernel snapshots and experimental subsystems.
 
-All users should be familiar with:
+**Audience:** Kernel developers, systems researchers, platform engineers, and contributors interested in AI‑native OS innovations.
 
-* Building requirements: Documentation/process/changes.rst
-* Code of Conduct: Documentation/process/code-of-conduct.rst
-* License: See COPYING
+---
 
-Documentation can be built with make htmldocs or viewed online at:
-https://www.kernel.org/doc/html/latest/
+## Project Structure
+- **`master` / upstream branches** — full upstream history and tags (archived for provenance).  
+- **`mono-zenith-1.0`** — primary development branch pinned to a chosen release snapshot.  
+- **`docs/`** — design docs, architecture notes, and contributor guides.  
+- **`patches/`** — curated experimental patches and RFCs.  
+- **`.github/workflows/`** — CI workflows for builds, tests, and security scans.
 
+---
 
-Who Are You?
-============
+## Versioning and Pinning
+**Pinning strategy:** Work on a branch created from a specific upstream tag (example: `v7.1-rc5` or `v7.0`). This gives a reproducible baseline while keeping the full history available for merges.
 
-Find your role below:
+Example commands to pin to a tag and push a working branch:
+```bash
+git fetch --all --tags
+git checkout -b mono-zenith-1.0 v7.1-rc5
+git push -u origin mono-zenith-1.0
+```
 
-* New Kernel Developer - Getting started with kernel development
-* Academic Researcher - Studying kernel internals and architecture
-* Security Expert - Hardening and vulnerability analysis
-* Backport/Maintenance Engineer - Maintaining stable kernels
-* System Administrator - Configuring and troubleshooting
-* Maintainer - Leading subsystems and reviewing patches
-* Hardware Vendor - Writing drivers for new hardware
-* Distribution Maintainer - Packaging kernels for distros
-* AI Coding Assistant - LLMs and AI-powered development tools
+**Shallow clones for day‑to‑day work:**
+```bash
+git clone --depth=1 https://github.com/DeepcometAI/mono-zenith.git
+cd mono-zenith
+git checkout mono-zenith-1.0
+```
 
+---
 
-For Specific Users
-==================
+## Security and Vulnerability Handling
+**Baseline security posture:** Mono‑Zenith preserves upstream fixes and expects maintainers to track upstream stable branches for security patches.
 
-New Kernel Developer
---------------------
+**Known issues & mitigation:** If you base work on older tags, verify whether critical fixes (for example, privilege escalation or crypto interface bugs) are present. When a security fix is required:
+- Identify the upstream commit that introduced the patch.
+- Cherry‑pick the commit into `mono-zenith-1.0` and run CI/security tests.
+- Document the backport in `docs/security.md` with CVE references and test vectors.
 
-Welcome! Start your kernel development journey here:
+**Responsible disclosure:** Report security issues to the maintainers via the repository’s security policy. Do not publish exploit details before a fix is available.
 
-* Getting Started: Documentation/process/development-process.rst
-* Your First Patch: Documentation/process/submitting-patches.rst
-* Coding Style: Documentation/process/coding-style.rst
-* Build System: Documentation/kbuild/index.rst
-* Development Tools: Documentation/dev-tools/index.rst
-* Kernel Hacking Guide: Documentation/kernel-hacking/hacking.rst
-* Core APIs: Documentation/core-api/index.rst
+---
 
-Academic Researcher
--------------------
+## Development Workflow (Codespaces recommended)
+**Why Codespaces:** Linux case‑sensitive filesystem, no NTFS collisions, no need to download the full 6.3 GB history locally.
 
-Explore the kernel's architecture and internals:
+**Recommended flow:**
+1. Open a Codespace on `mono-zenith-1.0`.  
+2. Create a feature branch:
+   ```bash
+   git checkout -b feat/<short-descriptor>
+   ```
+3. Implement changes; keep commits small and focused.  
+4. Run local build/test in Codespaces container.  
+5. Push branch and open a Pull Request against `mono-zenith-1.0`.
 
-* Researcher Guidelines: Documentation/process/researcher-guidelines.rst
-* Memory Management: Documentation/mm/index.rst
-* Scheduler: Documentation/scheduler/index.rst
-* Networking Stack: Documentation/networking/index.rst
-* Filesystems: Documentation/filesystems/index.rst
-* RCU (Read-Copy Update): Documentation/RCU/index.rst
-* Locking Primitives: Documentation/locking/index.rst
-* Power Management: Documentation/power/index.rst
+**Local Windows notes:** If you must work locally on Windows and need full history, enable case sensitivity on the target folder before cloning:
+```powershell
+fsutil file setCaseSensitiveInfo D:\mono-zenith enable
+git clone https://github.com/DeepcometAI/mono-zenith.git
+```
+Prefer shallow clones for routine tasks.
 
-Security Expert
----------------
+---
 
-Security documentation and hardening guides:
+## Build and Test
+**Basic build (x86_64 example):**
+```bash
+make defconfig
+make -j$(nproc)
+```
 
-* Security Documentation: Documentation/security/index.rst
-* LSM Development: Documentation/security/lsm-development.rst
-* Self Protection: Documentation/security/self-protection.rst
-* Reporting Vulnerabilities: Documentation/process/security-bugs.rst
-* CVE Procedures: Documentation/process/cve.rst
-* Embargoed Hardware Issues: Documentation/process/embargoed-hardware-issues.rst
-* Security Features: Documentation/userspace-api/seccomp_filter.rst
+**ARM64 cross‑build example:**
+```bash
+export ARCH=arm64
+export CROSS_COMPILE=aarch64-linux-gnu-
+make defconfig
+make -j$(nproc)
+```
 
-Backport/Maintenance Engineer
------------------------------
+**Automated CI:** The repository includes GitHub Actions workflows to:
+- Build configured snapshots.
+- Run static analysis (sparse, clang‑tidy where applicable).
+- Run unit tests and integration smoke tests in containerized runners.
 
-Maintain and stabilize kernel versions:
+---
 
-* Stable Kernel Rules: Documentation/process/stable-kernel-rules.rst
-* Backporting Guide: Documentation/process/backporting.rst
-* Applying Patches: Documentation/process/applying-patches.rst
-* Subsystem Profile: Documentation/maintainer/maintainer-entry-profile.rst
-* Git for Maintainers: Documentation/maintainer/configure-git.rst
+## CI/CD and Release Process
+- **Continuous Integration:** Every PR triggers build + static checks. Experimental patches must pass CI before review.  
+- **Nightly snapshots:** Optional nightly builds of `mono-zenith-1.0` for integration testing.  
+- **Releases:** Tag release candidates from `mono-zenith-1.0` with semantic tags like `mono-zenith-1.0-rc1`. Include a release note summarizing changes and security backports.
 
-System Administrator
---------------------
+---
 
-Configure, tune, and troubleshoot Linux systems:
+## Contributing
+**How to contribute:**
+1. Fork the repo and branch from `mono-zenith-1.0`.  
+2. Follow the commit message format: `<subsystem>: short description` and include a longer body explaining rationale and tests.  
+3. Add tests or reproduce steps for regressions.  
+4. Open a PR with a clear description, test results, and any compatibility notes.
 
-* Admin Guide: Documentation/admin-guide/index.rst
-* Kernel Parameters: Documentation/admin-guide/kernel-parameters.rst
-* Sysctl Tuning: Documentation/admin-guide/sysctl/index.rst
-* Tracing/Debugging: Documentation/trace/index.rst
-* Performance Security: Documentation/admin-guide/perf-security.rst
-* Hardware Monitoring: Documentation/hwmon/index.rst
+**Code style:** Follow upstream Linux kernel coding style. See `Documentation/process/coding-style.rst` for details.
 
-Maintainer
-----------
+**Review process:**  
+- Small, focused patches get faster review.  
+- Major design changes require an RFC in `docs/rfcs/` and a design review meeting.
 
-Lead kernel subsystems and manage contributions:
+---
 
-* Maintainer Handbook: Documentation/maintainer/index.rst
-* Pull Requests: Documentation/maintainer/pull-requests.rst
-* Managing Patches: Documentation/maintainer/modifying-patches.rst
-* Rebasing and Merging: Documentation/maintainer/rebasing-and-merging.rst
-* Development Process: Documentation/process/maintainer-handbooks.rst
-* Maintainer Entry Profile: Documentation/maintainer/maintainer-entry-profile.rst
-* Git Configuration: Documentation/maintainer/configure-git.rst
+## Governance and Licensing
+**Governance:** DeepcometAI maintains Mono‑Zenith. Major design decisions are documented in `docs/governance.md`. Community contributors are welcome; maintainers reserve merge rights for core branches.
 
-Hardware Vendor
----------------
+**License:** Mono‑Zenith inherits the **GPLv2** license from the Linux kernel. All contributions must be compatible with GPLv2.
 
-Write drivers and support new hardware:
+---
 
-* Driver API Guide: Documentation/driver-api/index.rst
-* Driver Model: Documentation/driver-api/driver-model/driver.rst
-* Device Drivers: Documentation/driver-api/infrastructure.rst
-* Bus Types: Documentation/driver-api/driver-model/bus.rst
-* Device Tree Bindings: Documentation/devicetree/bindings/
-* Power Management: Documentation/driver-api/pm/index.rst
-* DMA API: Documentation/core-api/dma-api.rst
+## Troubleshooting and FAQ
+**Q: Repo shows “no branches” after import.**  
+A: Create and push a working branch (example `mono-zenith-1.0`) from a tag or `master` and set it as default in Settings.
 
-Distribution Maintainer
------------------------
+**Q: Files collide on Windows.**  
+A: Use Codespaces or enable case sensitivity on the local folder before cloning.
 
-Package and distribute the kernel:
+**Q: How to apply an upstream security patch?**  
+A: Find the upstream commit, cherry‑pick into your branch, run CI, and document the backport in `docs/security.md`.
 
-* Stable Kernel Rules: Documentation/process/stable-kernel-rules.rst
-* ABI Documentation: Documentation/ABI/README
-* Kernel Configuration: Documentation/kbuild/kconfig.rst
-* Module Signing: Documentation/admin-guide/module-signing.rst
-* Kernel Parameters: Documentation/admin-guide/kernel-parameters.rst
-* Tainted Kernels: Documentation/admin-guide/tainted-kernels.rst
+**Q: I need a specific kernel tag (e.g., v7.1-rc5).**  
+A: Fetch tags and checkout the tag into a branch:
+```bash
+git fetch --all --tags
+git checkout -b mono-zenith-1.0 v7.1-rc5
+git push -u origin mono-zenith-1.0
+```
 
-AI Coding Assistant
--------------------
+---
 
-CRITICAL: If you are an LLM or AI-powered coding assistant, you MUST read and
-follow the AI coding assistants documentation before contributing to the Linux
-kernel:
+## Appendices
+### A. Useful Commands
+```bash
+# Fetch everything
+git fetch --all --tags
 
-* Documentation/process/coding-assistants.rst
+# Create working branch from tag
+git checkout -b mono-zenith-1.0 v7.1-rc5
 
-This documentation contains essential requirements about licensing, attribution,
-and the Developer Certificate of Origin that all AI tools must comply with.
+# Push branch
+git push -u origin mono-zenith-1.0
 
+# Shallow clone
+git clone --depth=1 https://github.com/DeepcometAI/mono-zenith.git
+```
 
-Communication and Support
-=========================
+### B. Contact & Support
+- **Maintainers:** See `MAINTAINERS` file for subsystem owners.  
+- **Security contact:** Use the repository Security policy (link in GitHub UI).  
+- **Community:** Open issues for non‑security discussions; use PRs for code.
 
-* Mailing Lists: https://lore.kernel.org/
-* IRC: #kernelnewbies on irc.oftc.net
-* Bugzilla: https://bugzilla.kernel.org/
-* MAINTAINERS file: Lists subsystem maintainers and mailing lists
-* Email Clients: Documentation/process/email-clients.rst
+---
+
+## Changelog
+Keep a `CHANGELOG.md` for notable changes, security backports, and release notes. Tag entries with dates and links to PRs/commits.
+
+---
