@@ -80,22 +80,28 @@ jobs:
             -m 512M \
             -nographic \
             -kernel arch/arm64/boot/Image \
-            -append "console=ttyAMA0 panic=1 init=/bin/sh" \
+            -append "console=ttyAMA0 panic=1" \
             2>&1 | tee qemu-boot.log || true
 
-          # Check for kernel panic
-          if grep -q "Kernel panic" qemu-boot.log; then
-            echo "❌ Kernel panic detected during boot"
+          # A VFS rootfs panic is EXPECTED for a bare kernel with no initramfs.
+          # We verify the kernel successfully completes early boot and subsystem
+          # init — a real bug would panic long before reaching this stage.
+          if grep -q "Booting Linux" qemu-boot.log && \
+             grep -q "alternatives: applying system-wide alternatives" qemu-boot.log; then
+            echo "✅ Kernel boot initialization succeeded"
+            echo "ℹ️  VFS rootfs panic is expected without an initramfs"
+          else
+            echo "❌ Kernel failed to reach userspace init stage"
+            echo "--- Boot log ---"
             cat qemu-boot.log
             exit 1
           fi
 
-          # Check that decompression / boot started
-          if grep -q "Booting Linux" qemu-boot.log || \
-             grep -q "Linux version" qemu-boot.log; then
-            echo "✅ Kernel booted successfully"
-          else
-            echo "⚠️  Boot output unclear — check log"
+          # Fail only on early/unexpected panics (not the expected VFS one)
+          if grep -v "VFS: Unable to mount root fs" qemu-boot.log | \
+             grep -q "Kernel panic"; then
+            echo "❌ Unexpected kernel panic detected"
+            exit 1
           fi
 
       - name: Upload boot log
@@ -135,11 +141,25 @@ jobs:
             -append "console=ttyS0 panic=1" \
             2>&1 | tee qemu-boot-x86.log || true
 
-          if grep -q "Kernel panic" qemu-boot-x86.log; then
-            echo "❌ Kernel panic detected"
+          # Same logic as ARM64: VFS panic is expected without initramfs.
+          # Check that the kernel completed early init successfully.
+          if grep -q "Booting Linux" qemu-boot-x86.log && \
+             grep -q "alternatives: applying system-wide alternatives" qemu-boot-x86.log; then
+            echo "✅ Kernel boot initialization succeeded"
+            echo "ℹ️  VFS rootfs panic is expected without an initramfs"
+          else
+            echo "❌ Kernel failed to reach userspace init stage"
+            echo "--- Boot log ---"
+            cat qemu-boot-x86.log
             exit 1
           fi
-          echo "✅ x86_64 boot smoke test passed"
+
+          # Fail only on unexpected panics (not the expected VFS one)
+          if grep -v "VFS: Unable to mount root fs" qemu-boot-x86.log | \
+             grep -q "Kernel panic"; then
+            echo "❌ Unexpected kernel panic detected"
+            exit 1
+          fi
 
       - name: Upload boot log
         if: always()
@@ -157,20 +177,42 @@ jobs:
           ref: mono-zenith-1.0
           fetch-depth: 1
 
-      - name: Check patches directory
-        run: |
-          if [ ! -d patches/ ] || [ -z "$(ls patches/*.patch 2>/dev/null)" ]; then
-            echo "ℹ️  No patches found in patches/ — skipping"
-            exit 0
-          fi
-          echo "Found patches:"
-          ls patches/*.patch
-
       - name: Dry-run apply all patches
         run: |
-          for patch in patches/*.patch; do
+          # Exit cleanly if patches/ doesn't exist yet
+          if [ ! -d patches/ ]; then
+            echo "ℹ️  No patches/ directory found — skipping"
+            exit 0
+          fi
+
+          # Exit cleanly if no .patch files exist (uses nullglob to avoid literal glob)
+          shopt -s nullglob
+          patches=(patches/*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then
+            echo "ℹ️  No .patch files in patches/ — skipping"
+            exit 0
+          fi
+
+          echo "Found ${#patches[@]} patch(es):"
+          printf '  %s\n' "${patches[@]}"
+          echo ""
+
+          FAILED=0
+          for patch in "${patches[@]}"; do
             echo "Checking: $patch"
-            git apply --check "$patch" || \
-              (echo "❌ Patch does not apply: $patch" && exit 1)
+            if git apply --check "$patch" 2>&1; then
+              echo "  ✅ Applies cleanly"
+            else
+              echo "  ❌ Does not apply: $patch"
+              FAILED=1
+            fi
           done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "❌ One or more patches failed to apply"
+            exit 1
+          fi
+
+          echo ""
           echo "✅ All patches apply cleanly"

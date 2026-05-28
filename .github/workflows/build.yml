@@ -22,10 +22,12 @@ jobs:
             cross_compile: aarch64-linux-gnu-
             defconfig: defconfig
             image: arch/arm64/boot/Image
+            cc: ccache aarch64-linux-gnu-gcc
           - arch: x86_64
             cross_compile: ""
             defconfig: x86_64_defconfig
             image: arch/x86/boot/bzImage
+            cc: ccache gcc
 
     steps:
       - name: Checkout mono-zenith-1.0 (shallow)
@@ -43,6 +45,21 @@ jobs:
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             ccache dwarves pahole python3 \
             clang lld llvm
+
+      - name: Verify assembler version (ARM64)
+        if: matrix.arch == 'arm64'
+        run: |
+          echo "Assembler version:"
+          aarch64-linux-gnu-as --version
+          # Warn if binutils is older than 2.38 (known broken .inst support)
+          AS_VER=$(aarch64-linux-gnu-as --version | head -1 | grep -oP '\d+\.\d+' | head -1)
+          echo "Detected binutils version: $AS_VER"
+          awk -v v="$AS_VER" 'BEGIN {
+            split(v, a, "."); if (a[1]+0 < 2 || (a[1]+0 == 2 && a[2]+0 < 38))
+              print "⚠️  binutils < 2.38 detected — .inst disassembly may be unreliable"
+            else
+              print "✅ binutils version OK"
+          }'
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -62,24 +79,44 @@ jobs:
         run: |
           make ARCH=${{ matrix.arch }} \
                CROSS_COMPILE=${{ matrix.cross_compile }} \
-               CC="ccache gcc" \
+               CC="${{ matrix.cc }}" \
                -j$(nproc) \
                2>&1 | tee build-${{ matrix.arch }}.log
+          # Surface any errors immediately after build
+          echo ""
+          echo "=== Build error summary ==="
+          grep -E "^.*(error:|undefined reference|cannot find -l)" \
+            build-${{ matrix.arch }}.log > build-errors-${{ matrix.arch }}.txt || true
+          if [ -s build-errors-${{ matrix.arch }}.txt ]; then
+            echo "❌ Errors found:"
+            cat build-errors-${{ matrix.arch }}.txt
+          else
+            echo "✅ No errors detected in build output"
+          fi
 
       - name: Verify kernel image exists
         run: |
-          test -f ${{ matrix.image }} && \
-          echo "✅ Kernel image built: ${{ matrix.image }}" || \
-          (echo "❌ Kernel image missing" && exit 1)
+          if test -f "${{ matrix.image }}"; then
+            SIZE=$(du -sh "${{ matrix.image }}" | cut -f1)
+            echo "✅ Kernel image built: ${{ matrix.image }} ($SIZE)"
+          else
+            echo "❌ Kernel image missing: ${{ matrix.image }}"
+            echo "Last 50 lines of build log:"
+            tail -50 build-${{ matrix.arch }}.log
+            exit 1
+          fi
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-log-${{ matrix.arch }}
-          path: build-${{ matrix.arch }}.log
+          path: |
+            build-${{ matrix.arch }}.log
+            build-errors-${{ matrix.arch }}.txt
 
       - name: Upload kernel image
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: kernel-image-${{ matrix.arch }}
@@ -101,15 +138,44 @@ jobs:
           sudo apt-get install -y clang lld llvm \
             libssl-dev libelf-dev dwarves pahole \
             gcc-aarch64-linux-gnu
+          echo "Clang version: $(clang --version | head -1)"
+
+      - name: Configure kernel (Clang/ARM64)
+        run: |
+          make ARCH=arm64 LLVM=1 defconfig
 
       - name: Build with Clang (ARM64)
         run: |
-          make ARCH=arm64 LLVM=1 defconfig
-          make ARCH=arm64 LLVM=1 -j$(nproc) 2>&1 | tee clang-build.log
+          make ARCH=arm64 LLVM=1 \
+               -j$(nproc) \
+               2>&1 | tee clang-build.log
+          echo ""
+          echo "=== Clang build error summary ==="
+          grep -E "^.*(error:|undefined reference|cannot find)" \
+            clang-build.log > clang-errors.txt || true
+          if [ -s clang-errors.txt ]; then
+            echo "❌ Errors found:"
+            cat clang-errors.txt
+          else
+            echo "✅ No errors detected"
+          fi
+
+      - name: Verify Clang kernel image
+        run: |
+          if test -f arch/arm64/boot/Image; then
+            SIZE=$(du -sh arch/arm64/boot/Image | cut -f1)
+            echo "✅ Clang kernel image built ($SIZE)"
+          else
+            echo "❌ Clang kernel image missing"
+            tail -50 clang-build.log
+            exit 1
+          fi
 
       - name: Upload Clang build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: clang-build-log
-          path: clang-build.log
+          path: |
+            clang-build.log
+            clang-errors.txt
