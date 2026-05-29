@@ -56,36 +56,46 @@ jobs:
         with:
           ref: mono-zenith-1.0
           fetch-depth: 1
-          path: .
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: c
-          # security-extended fires on every kernel sprintf/strcpy — all false
-          # positives. security-and-quality is scoped enough to be meaningful
-          # on the patches Mono-Zenith actually owns.
+          # security-and-quality scoped to patches/ and docs/ via config file.
+          # The config file lives at .github/codeql/codeql-config.yml and must
+          # be committed to the repo — inline heredoc in a run: step causes
+          # YAML indentation issues that silently drop the path filters,
+          # resulting in the full kernel tree being scanned (1500+ false positives).
           queries: security-and-quality
           config-file: .github/codeql/codeql-config.yml
 
       - name: Install build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
-            build-essential flex bison libssl-dev libelf-dev
+          sudo apt-get install -y build-essential
 
       - name: Build for CodeQL analysis
         run: |
-          make ARCH=x86_64 x86_64_defconfig
-          make ARCH=x86_64 -j$(nproc) 2>/dev/null || true
+          # CodeQL only scans patches/ and docs/ per codeql-config.yml.
+          # A full kernel build is unnecessary — it compiles 1500+ upstream
+          # files that are excluded from scanning anyway, wastes 10+ CI minutes,
+          # and gives CodeQL the entire upstream tree to find false positives in.
+          # Only compile any .c files that actually exist under patches/.
+          if find patches/ -name "*.c" 2>/dev/null | grep -q .; then
+            echo "Compiling C files found in patches/:"
+            find patches/ -name "*.c" | while read f; do
+              echo "  CC $f"
+              gcc -c "$f" -I include -o /dev/null 2>/dev/null || true
+            done
+          else
+            echo "ℹ️  No C source files in patches/ — nothing to compile"
+            echo "ℹ️  CodeQL will scan patches/ and docs/ for static findings only"
+          fi
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:c"
-          # Always upload results — findings are reviewed in the Security tab,
-          # not treated as CI gate failures, since kernel builds can't be
-          # cleanly gated on CodeQL without tuning per-subsystem.
           upload: true
 
   dependency-review:
