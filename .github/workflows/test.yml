@@ -74,30 +74,33 @@ jobs:
 
       - name: QEMU boot smoke test
         run: |
-          timeout 90 qemu-system-aarch64 \
+          # Use more SMP cores to speed up emulated boot on slow CI runners.
+          # KVM is not available on GitHub Actions ARM runners so we use TCG.
+          timeout 300 qemu-system-aarch64 \
             -M virt \
             -cpu cortex-a57 \
+            -smp 2 \
             -m 512M \
             -nographic \
             -kernel arch/arm64/boot/Image \
             -append "console=ttyAMA0 panic=1" \
             2>&1 | tee qemu-boot.log || true
 
-          # A VFS rootfs panic is EXPECTED for a bare kernel with no initramfs.
-          # We verify the kernel successfully completes early boot and subsystem
-          # init — a real bug would panic long before reaching this stage.
-          if grep -q "Booting Linux" qemu-boot.log && \
-             grep -q "alternatives: applying system-wide alternatives" qemu-boot.log; then
-            echo "✅ Kernel boot initialization succeeded"
+          # "VFS: Finished mounting rootfs on nullfs" is the reliable landmark —
+          # it appears after all kernel subsystems init and just before the
+          # rootfs mount attempt. The subsequent VFS panic is expected without
+          # an initramfs and is NOT a kernel bug.
+          if grep -q "VFS: Finished mounting rootfs on nullfs" qemu-boot.log; then
+            echo "✅ Kernel init completed successfully"
             echo "ℹ️  VFS rootfs panic is expected without an initramfs"
           else
-            echo "❌ Kernel failed to reach userspace init stage"
-            echo "--- Boot log ---"
-            cat qemu-boot.log
+            echo "❌ Kernel did not reach VFS init stage within timeout"
+            echo "Last 30 lines of boot log:"
+            tail -30 qemu-boot.log
             exit 1
           fi
 
-          # Fail only on early/unexpected panics (not the expected VFS one)
+          # Catch any unexpected panics other than the known VFS rootfs one
           if grep -v "VFS: Unable to mount root fs" qemu-boot.log | \
              grep -q "Kernel panic"; then
             echo "❌ Unexpected kernel panic detected"
@@ -132,29 +135,44 @@ jobs:
           make ARCH=x86_64 x86_64_defconfig
           make ARCH=x86_64 -j$(nproc)
 
+      - name: Check KVM availability
+        run: |
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ]; then
+            echo "KVM_ARGS=-enable-kvm -cpu host" >> $GITHUB_ENV
+            echo "ℹ️  KVM available — using hardware acceleration"
+          else
+            echo "KVM_ARGS=-cpu qemu64" >> $GITHUB_ENV
+            echo "ℹ️  KVM not available — using TCG (software emulation)"
+          fi
+
       - name: QEMU boot smoke test
         run: |
-          timeout 90 qemu-system-x86_64 \
+          # 300s timeout: TCG software emulation on CI runners is slow.
+          # With KVM this completes in ~5s; without it, up to ~3 minutes.
+          timeout 300 qemu-system-x86_64 \
+            $KVM_ARGS \
+            -smp 2 \
             -m 512M \
             -nographic \
             -kernel arch/x86/boot/bzImage \
-            -append "console=ttyS0 panic=1" \
+            -append "console=ttyS0 panic=1 nokaslr" \
             2>&1 | tee qemu-boot-x86.log || true
 
-          # Same logic as ARM64: VFS panic is expected without initramfs.
-          # Check that the kernel completed early init successfully.
-          if grep -q "Booting Linux" qemu-boot-x86.log && \
-             grep -q "alternatives: applying system-wide alternatives" qemu-boot-x86.log; then
-            echo "✅ Kernel boot initialization succeeded"
+          # "VFS: Finished mounting rootfs on nullfs" is the correct landmark
+          # for a bare kernel smoke test. It confirms all subsystems initialised
+          # successfully. The VFS rootfs panic that follows is expected and
+          # normal — there is no initramfs or root device provided.
+          if grep -q "VFS: Finished mounting rootfs on nullfs" qemu-boot-x86.log; then
+            echo "✅ Kernel init completed successfully"
             echo "ℹ️  VFS rootfs panic is expected without an initramfs"
           else
-            echo "❌ Kernel failed to reach userspace init stage"
-            echo "--- Boot log ---"
-            cat qemu-boot-x86.log
+            echo "❌ Kernel did not reach VFS init stage within timeout"
+            echo "Last 30 lines of boot log:"
+            tail -30 qemu-boot-x86.log
             exit 1
           fi
 
-          # Fail only on unexpected panics (not the expected VFS one)
+          # Catch unexpected panics — anything other than the known VFS one
           if grep -v "VFS: Unable to mount root fs" qemu-boot-x86.log | \
              grep -q "Kernel panic"; then
             echo "❌ Unexpected kernel panic detected"
