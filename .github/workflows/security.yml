@@ -57,42 +57,36 @@ jobs:
           ref: mono-zenith-1.0
           fetch-depth: 1
 
+      - name: Check for scannable C source
+        id: check-src
+        run: |
+          # CodeQL C analyzer requires at least one .c file to build its
+          # database — it exits with code 32 if given nothing to compile.
+          # Skip the scan entirely until patches/ contains C source files.
+          if find patches/ -name "*.c" 2>/dev/null | grep -q .; then
+            COUNT=$(find patches/ -name "*.c" | wc -l)
+            echo "✅ Found $COUNT C file(s) in patches/ — proceeding with CodeQL"
+            echo "has_source=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️  No C source files in patches/ yet — skipping CodeQL"
+            echo "ℹ️  CodeQL will run automatically once .c files are added to patches/"
+            echo "has_source=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
+        if: steps.check-src.outputs.has_source == 'true'
+        uses: github/codeql-action/init@v3
         with:
           languages: c
-          # security-and-quality scoped to patches/ and docs/ via config file.
-          # The config file lives at .github/codeql/codeql-config.yml and must
-          # be committed to the repo — inline heredoc in a run: step causes
-          # YAML indentation issues that silently drop the path filters,
-          # resulting in the full kernel tree being scanned (1500+ false positives).
+          # build-mode: none — source-only analysis, no compilation required.
+          # Avoids the "no source code seen during build" error (exit code 32)
+          # that occurs when CodeQL's C database finalizer finds zero compiled files.
+          build-mode: none
           queries: security-and-quality
           config-file: .github/codeql/codeql-config.yml
 
-      - name: Install build deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y build-essential
-
-      - name: Build for CodeQL analysis
-        run: |
-          # CodeQL only scans patches/ and docs/ per codeql-config.yml.
-          # A full kernel build is unnecessary — it compiles 1500+ upstream
-          # files that are excluded from scanning anyway, wastes 10+ CI minutes,
-          # and gives CodeQL the entire upstream tree to find false positives in.
-          # Only compile any .c files that actually exist under patches/.
-          if find patches/ -name "*.c" 2>/dev/null | grep -q .; then
-            echo "Compiling C files found in patches/:"
-            find patches/ -name "*.c" | while read f; do
-              echo "  CC $f"
-              gcc -c "$f" -I include -o /dev/null 2>/dev/null || true
-            done
-          else
-            echo "ℹ️  No C source files in patches/ — nothing to compile"
-            echo "ℹ️  CodeQL will scan patches/ and docs/ for static findings only"
-          fi
-
       - name: Perform CodeQL Analysis
+        if: steps.check-src.outputs.has_source == 'true'
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:c"
