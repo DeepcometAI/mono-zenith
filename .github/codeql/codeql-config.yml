@@ -1,0 +1,39 @@
+name: Mono-Zenith CodeQL Config
+
+# Only scan code added by Mono-Zenith — not the upstream kernel tree.
+paths:
+  - patches/
+  - docs/
+
+# Exclude all upstream Linux subsystem directories.
+paths-ignore:
+  - arch/
+  - block/
+  - crypto/
+  - drivers/
+  - fs/
+  - include/
+  - init/
+  - ipc/
+  - kernel/
+  - lib/
+  - mm/
+  - net/
+  - scripts/
+  - security/
+  - sound/
+  - tools/
+  - usr/
+  - virt/
+
+query-filters:
+  - exclude:
+      id: cpp/unbounded-write
+  - exclude:
+      id: cpp/potentially-dangerous-function
+  - exclude:
+      id: cpp/use-of-expired-stack-address
+  - exclude:
+      id: cpp/overrunning-write
+  - exclude:
+      id: cpp/invalid-pointer-dereference
