@@ -56,9 +56,10 @@ jobs:
         with:
           ref: mono-zenith-1.0
           fetch-depth: 1
+          path: .
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: c
           # security-extended fires on every kernel sprintf/strcpy — all false
@@ -66,6 +67,7 @@ jobs:
           # on the patches Mono-Zenith actually owns.
           queries: security-and-quality
           config-file: .github/codeql/codeql-config.yml
+          build-mode: manual
 
       - name: Install build deps
         run: |
